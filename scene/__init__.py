@@ -43,6 +43,8 @@ class Scene:
 
         self.train_cameras = {}
         self.test_cameras = {}
+        import time
+        st = time.time()
         if os.path.exists(os.path.join(args.source_path, "sparse")):
             if args.use_lod:
                 print("[ Scene ] Found sparse folder, assuming Octree data set!")
@@ -88,9 +90,12 @@ class Scene:
             self.train_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.train_cameras, resolution_scale, args)
             print("[ Scene ] Loading Test Cameras")
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
+        et = time.time()
+        print("[ Scene ] Camera load took {} seconds".format(et - st))
 
-        self.depth_min = torch.tensor(float('inf'))
-        self.depth_max = torch.tensor(-float('inf'))
+        self.depth_min = torch.tensor(float('inf')) # 所有高斯中心 在 所有训练相机中的 最小深度
+        self.depth_max = torch.tensor(-float('inf'))    # 最大深度
+
         # Load Gaussian Model
         import time
         st = time.time()
@@ -103,6 +108,7 @@ class Scene:
             else:
                 self.gaussians[level].create_from_pcd(scene_info.point_cloud[level], self.cameras_extent)
 
+            # 遍历所有训练相机，获取所有高斯中心在各训练相机下的深度，初始化场景的深度范围
             for cam in self.train_cameras[1.0]:
                 xyz = self.gaussians[level].get_xyz.detach()
                 depth_z = self.get_z_depth(xyz, cam.world_view_transform)
@@ -227,12 +233,12 @@ class Scene:
             self.gaussians[level].add_densification_stats(level_viewspace_point_grad, level_visibility_filter)    
             level_start += self.gaussians[level].get_xyz.shape[0]
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
+    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, split_mode="default"):
         for level in range(self.max_level + 1):
             scale = np.min([np.sqrt(2) ** (self.max_level - level), 4.0])   #np.log(self.max_level - level + 1.0) + 1.0
             if max_screen_size:
                 max_screen_size = max_screen_size * scale
-            self.gaussians[level].densify_and_prune(max_grad * scale, min_opacity, extent * scale, max_screen_size)
+            self.gaussians[level].densify_and_prune(max_grad * scale, min_opacity, extent * scale, max_screen_size, split_mode)
     
     def reset_opacity(self):
         for level in range(self.max_level + 1):
@@ -245,12 +251,18 @@ class Scene:
 
 
     def get_gaussian_parameters(self, viewpoint, compute_cov3D_python, scaling_modifier=1.0, random=-1):
+        """
+        获取高斯模型的参数
+            viewpoint：W2C
+            compute_cov3D_python：是否在python代码中计算三维协方差矩阵
+            random：不加载lod点云时为 0
+        """
 
         levels = range(self.max_level + 1)
-        get_attrs = lambda attr: [getattr(self.gaussians[level], attr) for level in levels]
+        get_attrs = lambda attr: [getattr(self.gaussians[level], attr) for level in levels] # 不同LOD等级的模型
         xyz, features, opacity, scales, rotations = map(get_attrs, ['get_xyz', 'get_features', 'get_opacity', 'get_scaling', 'get_rotation'])
 
-        # Compute cov3D_precomp if necessary
+        # Compute cov3D_precomp if necessary，从最后一个等级（最精细）的模型计算协方差矩阵
         cov3D_precomp = [self.gaussians[-1].get_covariance(scaling_modifier)] * len(xyz) if compute_cov3D_python else None
 
         # Define activation levels based on 'random' parameter
@@ -260,9 +272,9 @@ class Scene:
             act_levels = [torch.floor(level) for level in act_levels]
             filters = [act_level == level for act_level, level in zip(act_levels, levels)]
         else:
-            filters = [torch.full_like(xyz[level][:,0], level == random, dtype=torch.bool) for level in levels]
+            filters = [torch.full_like(xyz[level][:,0], level == random, dtype=torch.bool) for level in levels] # N,1
 
-        # Concatenate all attributes
+        # 将不同LOD等级的模型的参数 级联
         concat_attrs = lambda attrs: torch.cat(attrs, dim=0)
         xyz, features, opacity, scales, rotations, filters = map(concat_attrs, [xyz, features, opacity, scales, rotations, filters])
 

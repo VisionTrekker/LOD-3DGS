@@ -374,6 +374,54 @@ class GaussianModel:
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
 
+    def get_dir_max_scaling(self, scaling, rots):
+        axis = torch.argmax(scaling, dim=-1)
+        max_scaling = scaling[torch.arange(scaling.shape[0]), axis]
+        dirs = rots.gather(2, axis[:, None, None].expand(-1, 3, -1)).squeeze(-1)
+
+        return dirs, max_scaling, axis
+
+    def densify_and_split_along_maxscaling(self, grads, grad_threshold, scene_extent, N=2, n_std=2):
+        n_init_points = self.get_xyz.shape[0]
+        # Extract points that satisfy the gradient condition
+        padded_grad = torch.zeros((n_init_points), device="cuda")
+        padded_grad[:grads.shape[0]] = grads.squeeze()
+        selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
+        selected_pts_mask = torch.logical_and(selected_pts_mask,
+                                              torch.max(self.get_scaling,
+                                                        dim=1).values > self.percent_dense * scene_extent)
+
+        scaling = self.get_scaling[selected_pts_mask]
+        rots = build_rotation(self._rotation[selected_pts_mask])
+        dirs, max_scaling, axis = self.get_dir_max_scaling(scaling, rots)
+
+        radii = (n_std * max_scaling / 3.)[..., None]
+        new_xyz1 = self.get_xyz[selected_pts_mask] + dirs * radii
+        new_xyz2 = self.get_xyz[selected_pts_mask] - dirs * radii
+        new_xyz = torch.cat((new_xyz1, new_xyz2), dim=0)
+
+        # radii_step = (n_std * max_scaling / 3.0) / (N - 1)  # (M,)
+        # offsets = torch.linspace(-(N - 1) / 2, (N - 1) / 2, N, device=scaling.device) * radii_step[..., None]   # (N,) * (M,1) = (M,N)
+        # new_xyz = self.get_xyz[selected_pts_mask].unsqueeze(1) + dirs.unsqueeze(1) * offsets  # (M,1,3) + (M,1,3) * (M,N) = (M,N,3)
+        # new_xyz = new_xyz.reshape(-1, 3)  # (M*N, 3)
+
+        new_scaling = scaling.detach().clone()
+        new_scaling[torch.arange(new_scaling.shape[0]), axis] = max_scaling / (0.8 * N)
+        new_scaling = self.scaling_inverse_activation(new_scaling.repeat(N,1))
+
+        new_rotation = self._rotation[selected_pts_mask].repeat(N,1)
+
+        new_features_dc = self._features_dc[selected_pts_mask].repeat(N,1,1)
+        new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
+
+        new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
+
+        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
+
+        prune_filter = torch.cat(
+            (selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
+        self.prune_points(prune_filter)
+
     def densify_and_clone(self, grads, grad_threshold, scene_extent):
         # Extract points that satisfy the gradient condition
         selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
@@ -389,12 +437,15 @@ class GaussianModel:
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
+    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, split_mode="default"):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
         self.densify_and_clone(grads, max_grad, extent)
-        self.densify_and_split(grads, max_grad, extent)
+        if split_mode=="default":
+            self.densify_and_split(grads, max_grad, extent)
+        elif split_mode=="max_scale":
+            self.densify_and_split_along_maxscaling(grads, max_grad, extent)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:

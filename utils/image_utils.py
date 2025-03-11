@@ -19,6 +19,8 @@ def psnr(img1, img2):
     return 20 * torch.log10(1.0 / torch.sqrt(mse))
 
 def warpped_depth(depth):
+    # 1. 当渲染的深度值<10时，则缩放到[0, 1]；>=10时，则按2-10/深度值非线性压缩深度
+    # 2. 再除以2，进一步压缩到[0,1]
     return torch.where(depth < 10.0, depth / 10.0, 2.0 - 10 / depth) / 2.0
 
 def unwarpped_depth(depth):

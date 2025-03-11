@@ -109,11 +109,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             pipe.debug = True
         
         # render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+        # 获取所有高斯模型的参数、当前的球谐阶数、最大球谐阶数
         xyz, features, opacity, scales, rotations, cov3D_precomp, \
             active_sh_degree, max_sh_degree, masks = scene.get_gaussian_parameters(viewpoint_cam.world_view_transform, pipe.compute_cov3D_python, random = random_level)
+
+        # 渲染
         render_pkg = render(viewpoint_cam,  xyz, features, opacity, scales, rotations, active_sh_degree, max_sh_degree, pipe, background, cov3D_precomp = cov3D_precomp)
+
         image, viewspace_point_tensor, visibility_filter, radii, depth = render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["depth"]
-        depth = warpped_depth(depth)
+        depth = warpped_depth(depth)     # 渲染的相机坐标系下的深度 压缩到[0,1]
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
@@ -142,7 +146,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             if viewpoint_cam.depth is not None:
                 ema_depth_loss_for_log = 0.4 * depth_loss.item()  + 0.6 * ema_depth_loss_for_log
             if iteration % 10 == 0:
-                progress_bar.set_postfix({"RGB Loss": f"{ema_loss_for_log:.{4}f}", "Depth Loss": f"{ema_depth_loss_for_log:.{4}f}"})
+                progress_bar.set_postfix({
+                    "RGB Loss": f"{ema_loss_for_log:.{4}f}",
+                    "Depth Loss": f"{ema_depth_loss_for_log:.{4}f}",
+                    "Points" : f"{scene.gaussians[-1].get_xyz.shape[0]}"
+                })
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
@@ -161,7 +169,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    scene.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                    scene.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold, split_mode=dataset.split_mode)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     scene.reset_opacity()
@@ -200,7 +208,7 @@ def training_report(tb_writer, iteration, rgb_loss, depth_loss, l1_loss, elapsed
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
         validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
-                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
+                              {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 55, 10)]})
 
         for config in validation_configs:
             if config['cameras'] and len(config['cameras']) > 0:

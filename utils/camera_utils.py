@@ -13,11 +13,14 @@ from scene.cameras import Camera
 import numpy as np
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
+from PIL import Image
+import sys
 
 WARNED = False
 
 def loadCam(args, id, cam_info, resolution_scale):
-    orig_w, orig_h = cam_info.image.size
+    image = Image.open(cam_info.image_path)
+    orig_w, orig_h = image.size
 
     if args.resolution in [1, 2, 4, 8]:
         resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
@@ -38,7 +41,7 @@ def loadCam(args, id, cam_info, resolution_scale):
         scale = float(global_down) * float(resolution_scale)
         resolution = (int(orig_w / scale), int(orig_h / scale))
 
-    resized_image_rgb = PILtoTorch(cam_info.image, resolution)
+    resized_image_rgb = PILtoTorch(image, resolution)
 
     gt_image = resized_image_rgb[:3, ...]
     loaded_mask = None
@@ -46,8 +49,9 @@ def loadCam(args, id, cam_info, resolution_scale):
     if resized_image_rgb.shape[1] == 4:
         loaded_mask = resized_image_rgb[3:4, ...]
 
-    if cam_info.depth is not None:
-        resized_depth_map = PILtoTorch(cam_info.depth.convert("LA"), resolution)
+    if cam_info.depth_path is not None:
+        depth = Image.open(cam_info.depth_path)
+        resized_depth_map = PILtoTorch(depth.convert("LA"), resolution)
         gt_depth = resized_depth_map[0:1]
         gt_depth_mask = resized_depth_map[1:2]
     else:
@@ -65,7 +69,12 @@ def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     camera_list = []
 
     for id, c in enumerate(cam_infos):
+        sys.stdout.write('\r')
+        sys.stdout.write("\tReading camera {}/{}".format(id + 1, len(cam_infos)))
+        sys.stdout.flush()
+
         camera_list.append(loadCam(args, id, c, resolution_scale))
+    sys.stdout.write('\n')
 
     return camera_list
 

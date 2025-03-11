@@ -35,11 +35,9 @@ class CameraInfo(NamedTuple):
     T: np.array
     FovY: np.array
     FovX: np.array
-    image: np.array
     image_path: str
     image_name: str
     depth_path: str
-    depth: np.array
     width: int
     height: int
     cx: float
@@ -109,18 +107,21 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, depths_fold
             assert False, "[ ERROR ] Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
         image_path = os.path.join(images_folder, os.path.basename(extr.name))
+        if not os.path.exists(image_path):
+            continue
+
         image_name = os.path.splitext(os.path.basename(image_path))[0]
-        image = Image.open(image_path)
+        # image = Image.open(image_path)
 
         if depths_folder is not None:
             depth_path = os.path.join(depths_folder, image_name + ".png")
-            depth = Image.open(depth_path)
+            # depth = Image.open(depth_path)
         else:
             depth_path = None
-            depth = None
+            # depth = None
 
-        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                              image_path=image_path, image_name=image_name, depth_path=depth_path, depth = depth, width=width, height=height, cx = cx, cy = cy)
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX,
+                              image_path=image_path, image_name=image_name, depth_path=depth_path, width=width, height=height, cx = cx, cy = cy)
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
@@ -437,6 +438,7 @@ def readoctreeColmapInfo(path, images, depths, eval, llffhold=8):
 
     pcd = None
     if not os.path.exists(las_path):
+        # 不存在.las文件，则先将原始点云转为LAS文件，再转为Octree以生成 LOD点云
         print("[ Dataloader ] Converting point3d.bin to LOD PCS, will happen only the first time you open the scene.")
         if not os.path.exists(ply_path):
             try:
@@ -451,7 +453,7 @@ def readoctreeColmapInfo(path, images, depths, eval, llffhold=8):
 
         print("[ Dataloader ] Converting points to LAS format.")
         mkdir_p(os.path.dirname(las_path))
-        storeLas(las_path, xyz, rgb)
+        storeLas(las_path, xyz, rgb)    # 将点云存为 points3D.las
 
         # Convert to octree
         print("[ Dataloader ] Converting LAS to octree for level-of-detail pointclouds.")
@@ -459,6 +461,7 @@ def readoctreeColmapInfo(path, images, depths, eval, llffhold=8):
         subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         print("[ Dataloader ] LOD pointclouds generated.")
     else:
+        # 存在.las文件，则将LAS文件 转为 Octree格式，PotreeConverter未编译成功，则使用Web-LOD-Converter
         if not os.path.exists(os.path.join(octree_path, "metadata.json")):
             # Convert to octree
             print("[ Dataloader ] Converting LAS to octree for level-of-detail pointclouds.")
@@ -466,6 +469,7 @@ def readoctreeColmapInfo(path, images, depths, eval, llffhold=8):
             subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             print("[ Dataloader ] LOD pointclouds generated.")
         else:
+            # 存在metadata.json，则已转为Octree
             print("[ Dataloader ] Found octree, skipping conversion.")
 
     # init the octree scene
